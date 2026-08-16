@@ -1,0 +1,22 @@
+{
+  "name": "@local/dsh-balance-monitor",
+  "version": "0.2.0",
+  "description": "DSH Web UI 余额监控插件：显示 DeepSeek 与小米 MiMo 余额 | Balance monitor for DeepSeek Harness Web UI (DeepSeek + Xiaomi MiMo)",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
+  "license": "MIT"
+}

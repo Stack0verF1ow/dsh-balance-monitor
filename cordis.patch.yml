@@ -1,0 +1,4 @@
+# dsh-balance-monitor: inserts the balance-monitor plugin row into the web profile
+- insert:
+    - id: balance-monitor
+      name: '@local/dsh-balance-monitor'

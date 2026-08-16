@@ -1,0 +1,15 @@
+# dependencies / local install artifacts
+node_modules/
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# build artifacts
+dist/
+*.tsbuildinfo
