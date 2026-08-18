@@ -59,6 +59,15 @@
         })
       }
 
+      /** Submit a new MiMo cookie to the host and refresh. */
+      function updateCookieApi(cookie) {
+        return apiCall('/update-cookie', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ cookie: cookie }),
+        })
+      }
+
       function fmtMoney(n, currency) {
         var v = Number(n)
         if (!isFinite(v)) return '--'
@@ -281,11 +290,35 @@
         // the API key comes from the DSH credential store and only proves
         // connectivity; quota numbers need a fresh web-session cookie.
         var mimoKeyHint = null
+        var mimoQuickFix = null
         if (info && info.key === 'mimo' && laneError && state) {
           if (state.mimoKeyValid === true) {
             mimoKeyHint = '\u5df2\u4ece\u51ed\u636e\u5e93\u8bfb\u53d6 XIAOMI_TOKEN_PLAN_CN_API_KEY \u4e14\u6821\u9a8c\u901a\u8fc7\uff1b\u989d\u5ea6\u63a5\u53e3\u53ea\u8ba4\u7f51\u9875 Cookie\uff0c\u8bf7\u5230 \u8bbe\u7f6e \u2192 \u4f59\u989d\u76d1\u63a7 \u66f4\u65b0'
           } else if (state.mimoKeyValid === false) {
             mimoKeyHint = 'MiMo API Key \u6821\u9a8c\u5931\u8d25\uff08XIAOMI_TOKEN_PLAN_CN_API_KEY\uff09'
+          }
+          // Show quick-fix button for stale cookie
+          if (state.mimoCookieStale) {
+            mimoQuickFix = e('button', {
+              type: 'button',
+              onClick: function () {
+                // Try auto-detect from browser, then navigate to settings if fails
+                apiCall('/auto-cookie', { method: 'POST' }).then(function (d) {
+                  if (d.cookieFound) {
+                    window.location.reload()
+                  } else {
+                    window.location.hash = '#/settings'
+                  }
+                }).catch(function () {
+                  window.location.hash = '#/settings'
+                })
+              },
+              style: {
+                marginTop: 4, padding: '4px 10px', borderRadius: 6,
+                border: '1px solid ' + CSS.warn, background: 'transparent',
+                color: CSS.warn, fontSize: 11, cursor: 'pointer', fontWeight: 500,
+              },
+            }, '\ud83d\udd0d \u81ea\u52a8\u66f4\u65b0 Cookie')
           }
         }
 
@@ -370,6 +403,7 @@
             todayTokensText ? e('div', { style: { fontSize: 12, color: CSS.textSecondary, marginTop: 2 } }, todayTokensText) : null,
             error ? e('div', { style: { color: CSS.error, fontSize: 12 } }, error) : null,
             laneError && mimoKeyHint ? e('div', { style: { fontSize: 12, color: CSS.textSecondary, marginTop: 2 } }, mimoKeyHint) : null,
+            mimoQuickFix ? mimoQuickFix : null,
             e('div', {
               style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 },
             },
@@ -430,6 +464,10 @@
         var [saving, setSaving] = React.useState(false)
         var [notice, setNotice] = React.useState(null)
         var initialized = React.useRef(false)
+        var [showManualCookie, setShowManualCookie] = React.useState(false)
+        var [manualCookie, setManualCookie] = React.useState('')
+        var [cookieUpdating, setCookieUpdating] = React.useState(false)
+        var [cookieUpdateMsg, setCookieUpdateMsg] = React.useState('')
 
         var load = function () {
           apiCall('/state').then(function (d) {
@@ -446,6 +484,24 @@
           var t = window.setInterval(load, 60 * 1000)
           return function () { window.clearInterval(t) }
         }, [])
+
+        // Auto-detect MiMo cookie from browser when stale/missing
+        React.useEffect(function () {
+          if (!state) return
+          if (!state.mimoCookieStale && state.hasMimoCookie) return
+          // Auto-trigger cookie detection from system browser
+          setCookieUpdating(true)
+          apiCall('/auto-cookie', { method: 'POST' }).then(function (d) {
+            if (d.cookieFound) {
+              setState(d.state)
+              setNotice('\u2713 Cookie \u5df2\u4ece\u6d4f\u89c8\u5668\u81ea\u52a8\u83b7\u53d6\uff01')
+            } else {
+              setCookieUpdateMsg(d.error || '\u672a\u627e\u5230\u3002\u8bf7\u786e\u8ba4\u5df2\u5728\u6d4f\u89c8\u5668\u4e2d\u767b\u5f55 MiMo \u5e73\u53f0\uff0c\u7136\u540e\u70b9\u51fb\u4e0a\u65b9\u6309\u94ae\u91cd\u8bd5\u3002')
+            }
+          }).catch(function (err) {
+            setCookieUpdateMsg('\u81ea\u52a8\u83b7\u53d6\u5931\u8d25: ' + err.message)
+          }).then(function () { setCookieUpdating(false) })
+        }, [state && state.mimoCookieStale, state && state.hasMimoCookie])
 
         var refresh = function () {
           setSaving(true)
@@ -503,7 +559,79 @@
           // MiMo
           e('h3', { style: { margin: '24px 0 8px', fontSize: 15, color: CSS.text } }, 'MiMo \u4f59\u989d\uff08\u53ef\u9009\uff09'),
           e('div', { style: { fontSize: 13, color: CSS.textSecondary, lineHeight: 1.7, marginBottom: 10 } },
-            '\u901a\u8fc7 MiMo \u5e73\u53f0\u7684 Cookie \u67e5\u8be2\u3002\u5728\u6d4f\u89c8\u5668\u767b\u5f55 platform.xiaomimimo.com \u540e\uff0c\u4ece\u5f00\u53d1\u8005\u5de5\u5177\u590d\u5236 Cookie\uff08\u901a\u5e38\u9700\u8981 api-platform_serviceToken \u4e0e userId\uff09\u3002'),
+            '\u901a\u8fc7 MiMo \u5e73\u53f0\u7684 Cookie \u67e5\u8be2\u3002\u652f\u6301\u81ea\u52a8\u66f4\u65b0\uff1a\u5f53 Cookie \u8fc7\u671f\u65f6\u4f1a\u81ea\u52a8\u63d0\u793a\u66f4\u65b0\uff0c\u65e0\u9700\u624b\u52a8\u590d\u5236\u3002'),
+
+          // Auto-update cookie section: shown when cookie is stale or not configured
+          (state && state.mimoCookieStale) || !state || !state.hasMimoCookie
+            ? e('div', {
+                style: {
+                  margin: '12px 0', padding: '14px 16px', borderRadius: 10,
+                  border: '1px solid ' + CSS.warn,
+                  background: 'linear-gradient(135deg, rgba(217,119,6,0.06), rgba(217,119,6,0.02))',
+                },
+              },
+                e('div', { style: { fontWeight: 600, fontSize: 14, color: CSS.warn, marginBottom: 8 } },
+                  state && state.mimoCookieStale ? '\u26a0 Cookie \u5df2\u8fc7\u671f' : '\ud83d\udd11 \u914d\u7f6e MiMo Cookie'),
+                e('div', { style: { fontSize: 13, color: CSS.textSecondary, lineHeight: 1.7, marginBottom: 12 } },
+                  state && state.mimoCookieStale
+                    ? 'MiMo Cookie \u5df2\u5931\u6548\uff0c\u6b63\u5728\u5c1d\u8bd5\u4ece\u6d4f\u89c8\u5668\u81ea\u52a8\u83b7\u53d6\u65b0 Cookie\u2026'
+                    : '\u6b63\u5728\u4ece\u7cfb\u7edf\u6d4f\u89c8\u5668\u81ea\u52a8\u83b7\u53d6 MiMo Cookie\u2026'),
+                // Auto-detect button
+                e('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 } },
+                  primaryButton(
+                    cookieUpdating ? '\u23f3 \u81ea\u52a8\u83b7\u53d6\u4e2d\u2026' : '\ud83d\udd0d \u4ece\u6d4f\u89c8\u5668\u81ea\u52a8\u83b7\u53d6 Cookie',
+                    function () {
+                      setCookieUpdating(true)
+                      setCookieUpdateMsg('')
+                      apiCall('/auto-cookie', { method: 'POST' }).then(function (d) {
+                        if (d.cookieFound) {
+                          setState(d.state)
+                          setCookieUpdateMsg('')
+                          setNotice('\u2713 Cookie \u5df2\u4ece\u6d4f\u89c8\u5668\u81ea\u52a8\u83b7\u53d6\u5e76\u66f4\u65b0\uff01')
+                        } else {
+                          setCookieUpdateMsg('\u2717 ' + (d.error || '\u672a\u627e\u5230 Cookie\uff0c\u8bf7\u786e\u8ba4\u5df2\u5728\u6d4f\u89c8\u5668\u4e2d\u767b\u5f55 MiMo \u5e73\u53f0'))
+                        }
+                      }).catch(function (err) {
+                        setCookieUpdateMsg('\u2717 \u83b7\u53d6\u5931\u8d25: ' + err.message)
+                      }).then(function () { setCookieUpdating(false) })
+                    },
+                    cookieUpdating,
+                  ),
+                ),
+                // Status message
+                cookieUpdateMsg
+                  ? e('div', { style: { marginTop: 6, marginBottom: 8, fontSize: 12, color: cookieUpdateMsg.charAt(0) === '\u2717' ? CSS.error : CSS.textSecondary } }, cookieUpdateMsg)
+                  : null,
+                // Manual fallback (collapsed by default)
+                e('details', { style: { marginTop: 4 } },
+                  e('summary', { style: { fontSize: 12, color: CSS.textSecondary, cursor: 'pointer', userSelect: 'none' } },
+                    '\u624b\u52a8\u7c98\u8d34 Cookie\uff08\u81ea\u52a8\u83b7\u53d6\u5931\u8d25\u65f6\u4f7f\u7528\uff09'),
+                  e('div', { style: { marginTop: 8 } },
+                    e('textarea', {
+                      value: manualCookie,
+                      onChange: function (ev) { setManualCookie(ev.target.value) },
+                      style: Object.assign({}, inputStyle(), { minHeight: 50, fontFamily: 'monospace', fontSize: 12 }),
+                      placeholder: 'api-platform_serviceToken=xxx; userId=xxx',
+                    }),
+                    e('div', { style: { display: 'flex', gap: 8, marginTop: 8 } },
+                      primaryButton('\u63d0\u4ea4', function () {
+                        if (!manualCookie.trim()) return
+                        setCookieUpdating(true)
+                        updateCookieApi(manualCookie.trim()).then(function (d) {
+                          setState(d.state)
+                          setManualCookie('')
+                          setNotice('Cookie \u5df2\u66f4\u65b0\uff01')
+                        }).catch(function (err) {
+                          setCookieUpdateMsg('\u2717 \u66f4\u65b0\u5931\u8d25: ' + err.message)
+                        }).then(function () { setCookieUpdating(false) })
+                      }, cookieUpdating),
+                    ),
+                  ),
+                ),
+              )
+            : null,
+
+          // Endpoint config (always shown)
           fieldLabel('\u63a5\u53e3\u5730\u5740'),
           e('input', {
             type: 'text',
@@ -513,15 +641,42 @@
             placeholder: 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage',
           }),
           e('div', { style: { height: 12 } }),
-          fieldLabel(state && state.hasMimoCookie
-            ? 'MiMo Cookie\uff08\u5df2\u914d\u7f6e\uff0c\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\uff09'
-            : 'MiMo Cookie'),
-          e('textarea', {
-            value: cookie,
-            onChange: function (ev) { setCookie(ev.target.value) },
-            style: Object.assign({}, inputStyle(), { minHeight: 76, fontFamily: 'monospace', fontSize: 12 }),
-            placeholder: 'api-platform_serviceToken=xxx; userId=xxx',
-          }),
+
+          // Current cookie status
+          state && state.hasMimoCookie && !state.mimoCookieStale
+            ? e('div', { style: Object.assign({}, cardStyle('ok'), { display: 'flex', alignItems: 'center', justifyContent: 'space-between' }) },
+                e('span', null, '\u2713 Cookie \u5df2\u914d\u7f6e\u4e14\u6709\u6548'),
+                primaryButton('\u624b\u52a8\u66f4\u65b0', function () {
+                  setShowManualCookie(!showManualCookie)
+                }, false, 'ghost'),
+              )
+            : null,
+          showManualCookie && state && state.hasMimoCookie && !state.mimoCookieStale
+            ? e('div', { style: { marginTop: 8 } },
+                e('textarea', {
+                  value: manualCookie,
+                  onChange: function (ev) { setManualCookie(ev.target.value) },
+                  style: Object.assign({}, inputStyle(), { minHeight: 60, fontFamily: 'monospace', fontSize: 12 }),
+                  placeholder: '\u7c98\u8d34\u65b0\u7684 Cookie \u5230\u6b64\u5904\u2026',
+                }),
+                e('div', { style: { display: 'flex', gap: 8, marginTop: 8 } },
+                  primaryButton('\u66f4\u65b0 Cookie', function () {
+                    if (!manualCookie.trim()) return
+                    setCookieUpdating(true)
+                    updateCookieApi(manualCookie.trim()).then(function (d) {
+                      setState(d.state)
+                      setManualCookie('')
+                      setShowManualCookie(false)
+                      setNotice('Cookie \u5df2\u66f4\u65b0\uff01')
+                    }).catch(function (err) {
+                      setError(err.message)
+                    }).then(function () { setCookieUpdating(false) })
+                  }, cookieUpdating),
+                  primaryButton('\u53d6\u6d88', function () { setShowManualCookie(false); setManualCookie('') }, false, 'ghost'),
+                ),
+              )
+            : null,
+
           mimo
             ? e('div', { style: cardStyle('ok') },
                 mimo.tokenPlanTotal > 0
@@ -531,18 +686,18 @@
                       + (fmtPct(mimo.monthPlanUsed, mimo.monthPlanTotal) !== null ? ' \u00b7 \u5df2\u7528 ' + fmtPct(mimo.monthPlanUsed, mimo.monthPlanTotal) : '') : '')
                     + (mimo.todayTokensLimit > 0 ? ' \u00b7 \u4eca\u65e5\u5df2\u7528: ' + fmtTokens(mimo.todayTokensUsed) + ' tokens' : '')
                   : '\u4f59\u989d: \u00a5' + Number(mimo.total || 0).toFixed(2))
-            : e('div', { style: cardStyle('warn') }, state && state.mimoError ? state.mimoError : '\u672a\u914d\u7f6e'),
+            : state && state.mimoError
+              ? e('div', { style: cardStyle('warn') }, state.mimoError)
+              : state && state.hasMimoCookie
+                ? e('div', { style: cardStyle('warn') }, '\u83b7\u53d6\u4e2d\u2026')
+                : null,
 
-          // MiMo API Key 状态：自动从 DSH 凭据库读取，仅用于连接校验（额度接口只认网页 Cookie）
+          // MiMo API Key 状态
           e('div', { style: { fontSize: 12, color: CSS.textSecondary, marginTop: 8, lineHeight: 1.7 } },
             'MiMo API Key: ' + (state && state.mimoKeyConfigured
               ? '\u5df2\u4ece DSH \u51ed\u636e\u5e93\u8bfb\u53d6\uff08XIAOMI_TOKEN_PLAN_CN_API_KEY\uff09'
               : '\u672a\u5728 DSH \u51ed\u636e\u5e93\u914d\u7f6e XIAOMI_TOKEN_PLAN_CN_API_KEY')
               + (state && state.mimoKeyValid === true ? ' \u00b7 \u6821\u9a8c\u901a\u8fc7' : state && state.mimoKeyValid === false ? ' \u00b7 \u6821\u9a8c\u5931\u8d25' : '')),
-          state && state.mimoCookieStale
-            ? e('div', { style: Object.assign({}, cardStyle('warn'), { marginTop: 8 }) },
-                '\u26a0 Cookie \u5df2\u8fc7\u671f\uff1a\u8bf7\u91cd\u65b0\u767b\u5f55 platform.xiaomimimo.com \u540e\uff0c\u5728\u6d4f\u89c8\u5668\u5f00\u53d1\u8005\u5de5\u5177\u4e2d\u590d\u5236 Cookie \u7c98\u8d34\u5230\u4e0a\u65b9\u5e76\u4fdd\u5b58\u3002\u989d\u5ea6\u67e5\u8be2\u53ea\u8ba4\u7f51\u9875\u4f1a\u8bdd Cookie\uff1bMiMo API Key \u4ec5\u7528\u4e8e\u6a21\u578b\u8c03\u7528\u3002')
-            : null,
 
           // actions
           e('div', { style: { display: 'flex', gap: 10, marginTop: 18, alignItems: 'center', flexWrap: 'wrap' } },

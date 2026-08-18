@@ -27,6 +27,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { request as httpsRequest } from 'node:https'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { readMimoCookie } from './chrome-cookies.js'
 
 export const inject = ['webServer']
 
@@ -62,7 +63,7 @@ function httpJson(url, extraHeaders = {}) {
       method: 'GET',
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'dsh-balance-monitor/0.3.1',
+        'User-Agent': 'dsh-balance-monitor/0.6.0',
         ...extraHeaders,
       },
       timeout: REQUEST_TIMEOUT_MS,
@@ -150,6 +151,7 @@ export function apply(ctx) {
     mimoCookieStale: false,
     mimoEndpoint: '',
     lastUpdated: null,
+    mimoLastCookieUpdate: null,
   }
 
   async function resolveCredential(name) {
@@ -227,8 +229,18 @@ export function apply(ctx) {
     }
   }
 
+  /** Try to read MiMo cookie from system browser (CDP or SQLite). */
+  async function autoReadMimoCookie() {
+    try {
+      return await readMimoCookie('xiaomimimo.com')
+    } catch (err) {
+      log(new Error('balance-monitor: auto-read cookie failed', { cause: err }))
+      return null
+    }
+  }
+
   async function fetchMimo() {
-    const cookie = config.mimoCookie.trim()
+    let cookie = config.mimoCookie.trim()
     const endpoint = config.mimoEndpoint.trim() || DEFAULT_MIMO_URL
     state.hasMimoCookie = cookie !== ''
     state.mimoEndpoint = endpoint
@@ -238,21 +250,56 @@ export function apply(ctx) {
     const key = await resolveCredential('XIAOMI_TOKEN_PLAN_CN_API_KEY')
     state.mimoKeyConfigured = key !== undefined
     state.mimoCookieStale = false
+
+    // Auto-detect: if no cookie stored, try reading from browser
+    if (cookie === '') {
+      const autoCookie = await autoReadMimoCookie()
+      if (autoCookie) {
+        cookie = autoCookie
+        config.mimoCookie = autoCookie
+        state.hasMimoCookie = true
+        try { await persistConfig() } catch {}
+      }
+    }
+
     if (cookie === '') {
       state.mimoKeyValid = key === undefined ? null : await checkMimoApiKey(key)
       return { data: null, error: '未配置 MiMo Cookie' }
     }
-    const { status, text } = await httpJson(endpoint, { Cookie: cookie })
+    let { status, text } = await httpJson(endpoint, { Cookie: cookie })
     if (status !== 200) {
       if (status === 401) {
-        // Session cookie expired/rotated. Verify the API key so the UI can
-        // distinguish "key broken" from "cookie stale" instead of a bare 401.
-        state.mimoCookieStale = true
-        state.mimoKeyValid = key === undefined ? null : await checkMimoApiKey(key)
-        return { data: null, error: 'HTTP 401：Cookie 已过期' }
+        // Cookie expired — try auto-refresh from browser before giving up
+        const freshCookie = await autoReadMimoCookie()
+        if (freshCookie && freshCookie !== cookie) {
+          cookie = freshCookie
+          config.mimoCookie = freshCookie
+          try { await persistConfig() } catch {}
+          // Retry with the fresh cookie
+          const retry = await httpJson(endpoint, { Cookie: freshCookie })
+          status = retry.status
+          text = retry.text
+          if (status === 200) {
+            // Auto-refresh succeeded!
+            state.mimoCookieStale = false
+            state.hasMimoCookie = true
+            // fall through to parse response below
+          } else {
+            state.mimoCookieStale = true
+            state.mimoKeyValid = key === undefined ? null : await checkMimoApiKey(key)
+            return { data: null, error: `HTTP ${status}：Cookie 已过期（浏览器自动刷新也失败）` }
+          }
+        } else {
+          // Session cookie expired/rotated. Verify the API key so the UI can
+          // distinguish "key broken" from "cookie stale" instead of a bare 401.
+          state.mimoCookieStale = true
+          state.mimoKeyValid = key === undefined ? null : await checkMimoApiKey(key)
+          return { data: null, error: 'HTTP 401：Cookie 已过期' }
+        }
+      } else {
+        state.mimoKeyValid = null
+        return { data: null, error: `HTTP ${status}` }
       }
-      state.mimoKeyValid = null
-      return { data: null, error: `HTTP ${status}` }
     }
     state.mimoKeyValid = null
     let d
@@ -333,6 +380,26 @@ export function apply(ctx) {
     return pass
   }
 
+  /** Update MiMo cookie and refresh balance. Returns { ok, error?, stale? }. */
+  async function updateMimoCookie(newCookie) {
+    if (typeof newCookie !== 'string') return { ok: false, error: '参数错误' }
+    const trimmed = newCookie.trim()
+    if (trimmed === '') return { ok: false, error: 'Cookie 不能为空' }
+    config.mimoCookie = trimmed.slice(0, 8192)
+    await persistConfig()
+    await refresh()
+    // Verify it worked
+    if (state.mimoError) {
+      // Check if this is a stale cookie (401)
+      if (state.mimoError.includes('401') || state.mimoError.includes('过期')) {
+        return { ok: false, error: state.mimoError, stale: true }
+      }
+      return { ok: false, error: state.mimoError }
+    }
+    state.mimoLastCookieUpdate = Date.now()
+    return { ok: true }
+  }
+
   async function persistConfig() {
     const path = configFilePath()
     await mkdir(dirname(path), { recursive: true })
@@ -401,6 +468,23 @@ export function apply(ctx) {
         await persistConfig()
         const fresh = await refresh()
         sendJson(res, 200, { ok: true, state: fresh })
+        return
+      }
+      if (req.method === 'POST' && pathname === '/balance/api/update-cookie') {
+        const body = await readJsonBody(req)
+        const result = await updateMimoCookie(body.cookie)
+        sendJson(res, result.ok ? 200 : 400, { ...result, state })
+        return
+      }
+      if (req.method === 'POST' && pathname === '/balance/api/auto-cookie') {
+        const autoCookie = await autoReadMimoCookie()
+        if (autoCookie) {
+          const result = await updateMimoCookie(autoCookie)
+          sendJson(res, 200, { ok: result.ok, cookieFound: true, state })
+        } else {
+          sendJson(res, 200, { ok: false, cookieFound: false, state,
+            error: '未在浏览器 Cookie 数据库中找到 MiMo Cookie，请确认已在浏览器中登录 MiMo 平台' })
+        }
         return
       }
       sendJson(res, 404, { ok: false, error: 'not found' })
