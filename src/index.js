@@ -4,10 +4,16 @@
  * Shows API balance in the DSH web UI:
  * - DeepSeek:  reads the DEEPSEEK_API_KEY credential from the DSH credential
  *              store (no key pasting needed) and calls the documented
- *              `GET https://api.deepseek.com/user/balance` endpoint.
+ *              `GET https://api.deepseek.com/user/balance` endpoint. The API
+ *              has no spend endpoint, so "今日花费" (today's spend) is derived
+ *              from a persisted day baseline: the balance at the first
+ *              successful fetch of each local day minus the current balance
+ *              (stored alongside the MiMo config in $DSH_HOME).
  * - Xiaomi MiMo: optional cookie-based check against the MiMo platform API.
  *              The cookie and endpoint live in a small plugin-owned config
  *              file under $DSH_HOME, editable from the web settings page.
+ *              The tokenPlan quota response also exposes used/limit counts,
+ *              which the browser half renders as "已用 %".
  *
  * The browser half talks to this half over three same-origin HTTP routes
  * served from the shared `webServer` service:
@@ -53,7 +59,7 @@ function httpJson(url, extraHeaders = {}) {
       method: 'GET',
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'dsh-balance-monitor/0.2',
+        'User-Agent': 'dsh-balance-monitor/0.3',
         ...extraHeaders,
       },
       timeout: REQUEST_TIMEOUT_MS,
@@ -77,6 +83,24 @@ function num(value) {
   return Number.isFinite(n) ? n : 0
 }
 
+/** Local-timezone date key (YYYY-MM-DD) used for the "today" baseline. */
+function localDateString(date = new Date()) {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+/** Sanitize the persisted DeepSeek day baseline, or return null. */
+function parseDayBaseline(raw) {
+  if (raw === null || typeof raw !== 'object') return null
+  const entry = raw
+  if (typeof entry.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(entry.date)) return null
+  const balance = Number(entry.balance)
+  if (!Number.isFinite(balance)) return null
+  return { date: entry.date, balance }
+}
+
 function configFilePath() {
   const home = process.env.DSH_HOME || join(homedir(), '.dsh')
   return join(home, 'balance-monitor.json')
@@ -85,15 +109,16 @@ function configFilePath() {
 function loadConfig(log) {
   const path = configFilePath()
   try {
-    if (!existsSync(path)) return { mimoCookie: '', mimoEndpoint: '' }
+    if (!existsSync(path)) return { mimoCookie: '', mimoEndpoint: '', deepseekDayBaseline: null }
     const raw = JSON.parse(readFileSync(path, 'utf8'))
     return {
       mimoCookie: typeof raw.mimoCookie === 'string' ? raw.mimoCookie : '',
       mimoEndpoint: typeof raw.mimoEndpoint === 'string' ? raw.mimoEndpoint : '',
+      deepseekDayBaseline: parseDayBaseline(raw.deepseekDayBaseline),
     }
   } catch (error) {
     log(new Error('balance-monitor: config load failed', { cause: error }))
-    return { mimoCookie: '', mimoEndpoint: '' }
+    return { mimoCookie: '', mimoEndpoint: '', deepseekDayBaseline: null }
   }
 }
 
@@ -153,13 +178,34 @@ export function apply(ctx) {
       return { data: null, error: '响应不是合法 JSON' }
     }
     const info = Array.isArray(d.balance_infos) ? d.balance_infos[0] : undefined
+    const total = num(info && info.total_balance)
+
+    // "今日花费": the balance at the first successful fetch of the local day
+    // minus the current balance. A rollover (or missing baseline) snapshots the
+    // current balance and persists it; a top-up mid-day can only push the delta
+    // negative, which we clamp to 0.
+    const today = localDateString()
+    const baseline = config.deepseekDayBaseline
+    let todaySpend = 0
+    if (baseline !== null && baseline.date === today) {
+      todaySpend = Math.max(0, baseline.balance - total)
+    } else {
+      config.deepseekDayBaseline = { date: today, balance: total }
+      try {
+        await persistConfig()
+      } catch (error) {
+        log(new Error('balance-monitor: day baseline persist failed', { cause: error }))
+      }
+    }
+
     return {
       data: {
         available: Boolean(d.is_available),
         currency: info && typeof info.currency === 'string' ? info.currency : 'CNY',
-        total: num(info && info.total_balance),
+        total,
         granted: num(info && info.granted_balance),
         toppedUp: num(info && info.topped_up_balance),
+        todaySpend,
       },
       error: null,
     }
@@ -197,6 +243,21 @@ export function apply(ctx) {
     const plan = findItem('usage', 'plan_total_token')
     const month = findItem('monthUsage', 'month_total_token')
     const remaining = (item) => Math.max(0, num(item && item.limit) - num(item && item.used))
+    // Some platform variants expose a daily usage row ("day_total_token");
+    // detect it defensively so the UI can show today's token spend when present.
+    const day = findItem('usage', 'day_total_token') || findItem('monthUsage', 'day_total_token')
+    const dayFallback = day === undefined
+      ? (() => {
+          const sections = [d && d.data && d.data.usage, d && d.data && d.data.monthUsage]
+          for (const section of sections) {
+            if (!section || !Array.isArray(section.items)) continue
+            const hit = section.items.find((item) => item && /day/i.test(String(item.name || '')))
+            if (hit !== undefined) return hit
+          }
+          return undefined
+        })()
+      : undefined
+    const dayItem = day !== undefined ? day : dayFallback
     return {
       data: {
         // token 配额制套餐已无现金余额，余额语义映射为剩余 token 数
@@ -204,8 +265,12 @@ export function apply(ctx) {
         currency: 'TOKEN',
         tokenPlan: remaining(plan),
         tokenPlanTotal: num(plan && plan.limit),
+        tokenPlanUsed: num(plan && plan.used),
         monthPlan: remaining(month),
         monthPlanTotal: num(month && month.limit),
+        monthPlanUsed: num(month && month.used),
+        todayTokensUsed: num(dayItem && dayItem.used),
+        todayTokensLimit: num(dayItem && dayItem.limit),
       },
       error: null,
     }
@@ -239,7 +304,11 @@ export function apply(ctx) {
   async function persistConfig() {
     const path = configFilePath()
     await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, JSON.stringify({ mimoCookie: config.mimoCookie, mimoEndpoint: config.mimoEndpoint }, null, 2), { mode: 0o600 })
+    await writeFile(path, JSON.stringify({
+      mimoCookie: config.mimoCookie,
+      mimoEndpoint: config.mimoEndpoint,
+      deepseekDayBaseline: config.deepseekDayBaseline,
+    }, null, 2), { mode: 0o600 })
   }
 
   // ---- HTTP API for the browser half -------------------------------------

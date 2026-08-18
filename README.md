@@ -14,8 +14,13 @@ _在 DSH Web 界面直接显示 DeepSeek 与小米 MiMo 的 API 余额。_
 
 - **DeepSeek balance**: reads `DEEPSEEK_API_KEY` from the DSH credential store and calls the official
   `GET https://api.deepseek.com/user/balance` endpoint. No key pasting needed.
+- **DeepSeek today spend (今日花费)**: the balance API has no spend endpoint, so the plugin keeps a
+  persisted day baseline (balance at the first successful fetch of each local day, stored in
+  `$DSH_HOME/balance-monitor.json`) and shows `今日花费 = 当日基线余额 − 当前余额`.
 - **Xiaomi MiMo balance (optional)**: queries via the MiMo platform cookie; cookie and endpoint are
   configurable on the settings page and stored in `$DSH_HOME/balance-monitor.json` (mode `0600`).
+- **Token plan usage % (已用百分比)**: the token-plan quota display shows `已用 %` next to the
+  remaining tokens, plus today's token usage when the platform reports a daily usage row.
 - Auto-refresh every 5 minutes; panel and settings page also poll every 60 seconds.
 - The floating panel subscribes to `ctx.modelDirectories` (the same store as the `/model` popup and the
   composer model seat) and maps the currently selected model to the matching platform's balance.
@@ -24,8 +29,10 @@ _在 DSH Web 界面直接显示 DeepSeek 与小米 MiMo 的 API 余额。_
 
 - **Floating panel (persistent)**: the "当前模型余额" card at bottom-right shows the balance of the
   currently selected model — it follows in real time when you switch between DeepSeek / MiMo models;
-  draggable and collapsible (a small capsule when collapsed).
-- **Settings → 余额监控**: DeepSeek status, MiMo cookie / endpoint config, refresh now, clear cookie.
+  draggable and collapsible (a small capsule when collapsed). Cash balance lanes also show
+  「今日花费」; token-plan lanes show 「已用 %」 (highlighted in warning/error colors at 75%/90%).
+- **Settings → 余额监控**: DeepSeek status (含今日花费), MiMo cookie / endpoint config, refresh now,
+  clear cookie.
 
 ## Install / 安装
 
@@ -52,6 +59,8 @@ browser (only "is configured" flags do).
 ## FAQ
 
 - **DeepSeek 显示「未配置凭据」**: make sure `~/.dsh/.credentials.yaml` has a non-empty `DEEPSEEK_API_KEY`.
+- **「今日花费」是怎么算的**: DeepSeek 官方接口只有余额没有消费明细，插件用「当日首次成功拉取时的余额」作基线，
+  今日花费 = 基线余额 − 当前余额（当天首次拉取/跨天自动更新基线并落盘，跨重启也有效；当天充值会使差值变负，按 0 显示）。
 - **MiMo 显示 HTTP 404 / 解析失败**: the MiMo platform API may have changed; edit the endpoint on the
   settings page. As of 2026-08-16, `api/v1/user/balance` is gone; the current working endpoint is
   `https://platform.xiaomimimo.com/api/v1/tokenPlan/usage` (token-quota plan, no cash balance — the

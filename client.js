@@ -6,7 +6,10 @@
  * Cordis client plugin ({ apply }), which registers:
  *  - shell.overlay      — a floating, draggable, collapsible panel that shows
  *                         the CURRENTLY SELECTED model and its balance
- *                         directly (bottom-right corner by default).
+ *                         directly (bottom-right corner by default). Cash
+ *                         balance lanes also show today's spend; token-plan
+ *                         lanes show the used percentage (and today's token
+ *                         usage when the platform reports it).
  *  - settings.section   — the "余额监控" settings page: DeepSeek status,
  *                         MiMo cookie/endpoint configuration, manual refresh.
  *
@@ -74,6 +77,17 @@
       }
       function trimZero(s) {
         return s.replace(/\.?0+$/, '')
+      }
+
+      /** Used share of a quota as a compact percent string ("68.8%"), or null. */
+      function fmtPct(used, limit) {
+        var u = Number(used)
+        var l = Number(limit)
+        if (!isFinite(u) || !isFinite(l) || l <= 0) return null
+        var pct = Math.max(0, Math.min(100, (u / l) * 100))
+        if (pct >= 99.95) return '100%'
+        if (pct >= 10) return trimZero(pct.toFixed(1)) + '%'
+        return trimZero(pct.toFixed(2)) + '%'
       }
 
       /** MiMo lane headline: token plan when available (money balance is gone). */
@@ -237,6 +251,30 @@
         }
         if (error) dotColor = CSS.error
 
+        // Extra lane info: cash balance lanes show today's spend; token-plan
+        // lanes show the used percentage (and today's token usage when the
+        // platform reports a daily row).
+        var spendText = null
+        var pctText = null
+        var pctColor = CSS.textSecondary
+        var todayTokensText = null
+        if (info && info.key !== null && balance) {
+          if (info.key === 'deepseek' && isFinite(Number(balance.todaySpend))) {
+            spendText = '\u4eca\u65e5\u82b1\u8d39 ' + fmtMoney(balance.todaySpend, balance.currency)
+          }
+          if (info.key === 'mimo' && balance.tokenPlanTotal > 0) {
+            var pct = fmtPct(balance.tokenPlanUsed, balance.tokenPlanTotal)
+            if (pct !== null) {
+              pctText = '\u5df2\u7528 ' + pct
+              var pctValue = (Number(balance.tokenPlanUsed) / Number(balance.tokenPlanTotal)) * 100
+              pctColor = pctValue >= 90 ? CSS.error : (pctValue >= 75 ? CSS.warn : CSS.textSecondary)
+            }
+            if (balance.todayTokensLimit > 0) {
+              todayTokensText = '\u4eca\u65e5\u5df2\u7528 ' + fmtTokens(balance.todayTokensUsed) + ' tokens'
+            }
+          }
+        }
+
         var modelLabel = model
           ? (info ? info.label + ' \u00b7 ' + model.model : model.model)
           : (sessionId ? '\u8bfb\u53d6\u4e2d\u2026' : '\u65e0\u6d3b\u52a8\u4f1a\u8bdd')
@@ -271,7 +309,9 @@
             e('span', { style: { width: 8, height: 8, borderRadius: '50%', background: dotColor, display: 'inline-block' } }),
             e('span', { style: { fontWeight: 600, fontSize: 12 } },
               balance
-                ? (info && info.key === 'mimo' && balance.tokenPlanTotal > 0 ? fmtTokens(balance.tokenPlan) : fmtMoney(balance.total, balance.currency))
+                ? (info && info.key === 'mimo' && balance.tokenPlanTotal > 0
+                    ? fmtTokens(balance.tokenPlan) + (pctText ? ' \u00b7 ' + pctText : '')
+                    : fmtMoney(balance.total, balance.currency))
                 : '\u00a5'),
           )
         }
@@ -302,12 +342,15 @@
           ),
           e('div', { style: { padding: '9px 12px 10px', lineHeight: 1.7 } },
             info
-              ? e('div', { style: { fontSize: 13 } },
+              ? e('div', { style: { fontSize: 13, display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', columnGap: 8, rowGap: 2 } },
                   e('span', { style: { color: CSS.textSecondary } },
                     info.key === 'mimo' && balance && balance.tokenPlanTotal > 0 ? '\u5269\u4f59 ' : '\u4f59\u989d '),
                   e('span', { style: { fontWeight: 600, color: dotColor === CSS.warn ? CSS.warn : CSS.text } }, balanceText || '--'),
+                  spendText ? e('span', { style: { fontSize: 12, color: CSS.textSecondary } }, spendText) : null,
+                  pctText ? e('span', { style: { fontSize: 12, fontWeight: 600, color: pctColor } }, pctText) : null,
                 )
               : e('div', { style: { color: CSS.textSecondary } }, '\u5f53\u524d\u6a21\u578b\u672a\u63a5\u5165\u4f59\u989d\u76d1\u63a7'),
+            todayTokensText ? e('div', { style: { fontSize: 12, color: CSS.textSecondary, marginTop: 2 } }, todayTokensText) : null,
             error ? e('div', { style: { color: CSS.error, fontSize: 12 } }, error) : null,
             e('div', {
               style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 },
@@ -432,6 +475,7 @@
                       '\u603b\u4f59\u989d: ' + fmtMoney(ds.total, ds.currency),
                       ' \u00b7 \u8d60\u9001: ' + fmtMoney(ds.granted, ds.currency),
                       ' \u00b7 \u5145\u503c: ' + fmtMoney(ds.toppedUp, ds.currency),
+                      isFinite(Number(ds.todaySpend)) ? ' \u00b7 \u4eca\u65e5\u82b1\u8d39: ' + fmtMoney(ds.todaySpend, ds.currency) : '',
                       !ds.available ? ' \u00b7 \u4f59\u989d\u4e0d\u53ef\u7528' : '')
                   : e('span', null, (state.deepseekError || '\u83b7\u53d6\u4e2d\u2026')),
               )
@@ -464,7 +508,10 @@
             ? e('div', { style: cardStyle('ok') },
                 mimo.tokenPlanTotal > 0
                   ? 'Token Plan \u5269\u4f59: ' + fmtTokens(mimo.tokenPlan) + ' / ' + fmtTokens(mimo.tokenPlanTotal)
-                    + (mimo.monthPlanTotal > 0 ? ' \u00b7 \u672c\u6708: ' + fmtTokens(mimo.monthPlan) + ' / ' + fmtTokens(mimo.monthPlanTotal) : '')
+                    + (fmtPct(mimo.tokenPlanUsed, mimo.tokenPlanTotal) !== null ? ' \u00b7 \u5df2\u7528 ' + fmtPct(mimo.tokenPlanUsed, mimo.tokenPlanTotal) : '')
+                    + (mimo.monthPlanTotal > 0 ? ' \u00b7 \u672c\u6708: ' + fmtTokens(mimo.monthPlan) + ' / ' + fmtTokens(mimo.monthPlanTotal)
+                      + (fmtPct(mimo.monthPlanUsed, mimo.monthPlanTotal) !== null ? ' \u00b7 \u5df2\u7528 ' + fmtPct(mimo.monthPlanUsed, mimo.monthPlanTotal) : '') : '')
+                    + (mimo.todayTokensLimit > 0 ? ' \u00b7 \u4eca\u65e5\u5df2\u7528: ' + fmtTokens(mimo.todayTokensUsed) + ' tokens' : '')
                   : '\u4f59\u989d: \u00a5' + Number(mimo.total || 0).toFixed(2))
             : e('div', { style: cardStyle('warn') }, state && state.mimoError ? state.mimoError : '\u672a\u914d\u7f6e'),
 
