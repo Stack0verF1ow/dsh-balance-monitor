@@ -33,6 +33,9 @@ export const inject = ['webServer']
 const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance'
 // MiMo 平台已下线 /api/v1/user/balance，当前余额走 tokenPlan 配额接口（2026-08-16 实测 200）。
 const DEFAULT_MIMO_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage'
+// MiMo Token Plan 模型接口（OpenAI 兼容）：仅用 API Key 验证连接/Key 有效性；
+// 官方没有 Key 版额度接口，配额数字只能走网页会话 Cookie（platform.xiaomimimo.com）。
+const MIMO_MODELS_URL = 'https://token-plan-cn.xiaomimimo.com/v1/models'
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000
 const REQUEST_TIMEOUT_MS = 15000
 const MAX_BODY_BYTES = 64 * 1024
@@ -59,7 +62,7 @@ function httpJson(url, extraHeaders = {}) {
       method: 'GET',
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'dsh-balance-monitor/0.3',
+        'User-Agent': 'dsh-balance-monitor/0.3.1',
         ...extraHeaders,
       },
       timeout: REQUEST_TIMEOUT_MS,
@@ -142,6 +145,9 @@ export function apply(ctx) {
     mimoError: null,
     deepseekKeyConfigured: false,
     hasMimoCookie: false,
+    mimoKeyConfigured: false,
+    mimoKeyValid: null,
+    mimoCookieStale: false,
     mimoEndpoint: '',
     lastUpdated: null,
   }
@@ -211,18 +217,44 @@ export function apply(ctx) {
     }
   }
 
+  /** True when the MiMo token-plan API key answers the OpenAI-compatible /v1/models call. */
+  async function checkMimoApiKey(key) {
+    try {
+      const { status } = await httpJson(MIMO_MODELS_URL, { Authorization: `Bearer ${key}` })
+      return status === 200
+    } catch {
+      return false
+    }
+  }
+
   async function fetchMimo() {
     const cookie = config.mimoCookie.trim()
     const endpoint = config.mimoEndpoint.trim() || DEFAULT_MIMO_URL
     state.hasMimoCookie = cookie !== ''
     state.mimoEndpoint = endpoint
+    // API Key comes from the DSH credential store (XIAOMI_TOKEN_PLAN_CN_API_KEY),
+    // same pattern as DeepSeek — no pasting needed. It only proves connectivity:
+    // the quota endpoint itself is session-cookie-only.
+    const key = await resolveCredential('XIAOMI_TOKEN_PLAN_CN_API_KEY')
+    state.mimoKeyConfigured = key !== undefined
+    state.mimoCookieStale = false
     if (cookie === '') {
+      state.mimoKeyValid = key === undefined ? null : await checkMimoApiKey(key)
       return { data: null, error: '未配置 MiMo Cookie' }
     }
     const { status, text } = await httpJson(endpoint, { Cookie: cookie })
     if (status !== 200) {
+      if (status === 401) {
+        // Session cookie expired/rotated. Verify the API key so the UI can
+        // distinguish "key broken" from "cookie stale" instead of a bare 401.
+        state.mimoCookieStale = true
+        state.mimoKeyValid = key === undefined ? null : await checkMimoApiKey(key)
+        return { data: null, error: 'HTTP 401：Cookie 已过期' }
+      }
+      state.mimoKeyValid = null
       return { data: null, error: `HTTP ${status}` }
     }
+    state.mimoKeyValid = null
     let d
     try {
       d = JSON.parse(text)

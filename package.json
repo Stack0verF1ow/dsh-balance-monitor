@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-balance-monitor",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DSH Web UI 余额监控插件：显示 DeepSeek 与小米 MiMo 余额、今日花费与 Token Plan 已用百分比 | Balance monitor for DeepSeek Harness Web UI (DeepSeek + Xiaomi MiMo, today spend + token plan usage %)",
   "type": "module",
   "main": "src/index.js",

@@ -254,13 +254,15 @@
         // Extra lane info: cash balance lanes show today's spend; token-plan
         // lanes show the used percentage (and today's token usage when the
         // platform reports a daily row).
-        var spendText = null
+        var spendLabel = null
+        var spendAmount = null
         var pctText = null
         var pctColor = CSS.textSecondary
         var todayTokensText = null
         if (info && info.key !== null && balance) {
           if (info.key === 'deepseek' && isFinite(Number(balance.todaySpend))) {
-            spendText = '\u4eca\u65e5\u82b1\u8d39 ' + fmtMoney(balance.todaySpend, balance.currency)
+            spendLabel = '\u4eca\u65e5\u82b1\u8d39 '
+            spendAmount = fmtMoney(balance.todaySpend, balance.currency)
           }
           if (info.key === 'mimo' && balance.tokenPlanTotal > 0) {
             var pct = fmtPct(balance.tokenPlanUsed, balance.tokenPlanTotal)
@@ -272,6 +274,18 @@
             if (balance.todayTokensLimit > 0) {
               todayTokensText = '\u4eca\u65e5\u5df2\u7528 ' + fmtTokens(balance.todayTokensUsed) + ' tokens'
             }
+          }
+        }
+
+        // MiMo lane: when the quota query is unavailable, explain the state —
+        // the API key comes from the DSH credential store and only proves
+        // connectivity; quota numbers need a fresh web-session cookie.
+        var mimoKeyHint = null
+        if (info && info.key === 'mimo' && laneError && state) {
+          if (state.mimoKeyValid === true) {
+            mimoKeyHint = '\u5df2\u4ece\u51ed\u636e\u5e93\u8bfb\u53d6 XIAOMI_TOKEN_PLAN_CN_API_KEY \u4e14\u6821\u9a8c\u901a\u8fc7\uff1b\u989d\u5ea6\u63a5\u53e3\u53ea\u8ba4\u7f51\u9875 Cookie\uff0c\u8bf7\u5230 \u8bbe\u7f6e \u2192 \u4f59\u989d\u76d1\u63a7 \u66f4\u65b0'
+          } else if (state.mimoKeyValid === false) {
+            mimoKeyHint = 'MiMo API Key \u6821\u9a8c\u5931\u8d25\uff08XIAOMI_TOKEN_PLAN_CN_API_KEY\uff09'
           }
         }
 
@@ -346,12 +360,16 @@
                   e('span', { style: { color: CSS.textSecondary } },
                     info.key === 'mimo' && balance && balance.tokenPlanTotal > 0 ? '\u5269\u4f59 ' : '\u4f59\u989d '),
                   e('span', { style: { fontWeight: 600, color: dotColor === CSS.warn ? CSS.warn : CSS.text } }, balanceText || '--'),
-                  spendText ? e('span', { style: { fontSize: 12, color: CSS.textSecondary } }, spendText) : null,
+                  spendAmount ? e('span', { style: { fontSize: 12 } },
+                    e('span', { style: { color: CSS.textSecondary } }, spendLabel),
+                    e('span', { style: { fontWeight: 600, color: CSS.text } }, spendAmount),
+                  ) : null,
                   pctText ? e('span', { style: { fontSize: 12, fontWeight: 600, color: pctColor } }, pctText) : null,
                 )
               : e('div', { style: { color: CSS.textSecondary } }, '\u5f53\u524d\u6a21\u578b\u672a\u63a5\u5165\u4f59\u989d\u76d1\u63a7'),
             todayTokensText ? e('div', { style: { fontSize: 12, color: CSS.textSecondary, marginTop: 2 } }, todayTokensText) : null,
             error ? e('div', { style: { color: CSS.error, fontSize: 12 } }, error) : null,
+            laneError && mimoKeyHint ? e('div', { style: { fontSize: 12, color: CSS.textSecondary, marginTop: 2 } }, mimoKeyHint) : null,
             e('div', {
               style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 },
             },
@@ -514,6 +532,17 @@
                     + (mimo.todayTokensLimit > 0 ? ' \u00b7 \u4eca\u65e5\u5df2\u7528: ' + fmtTokens(mimo.todayTokensUsed) + ' tokens' : '')
                   : '\u4f59\u989d: \u00a5' + Number(mimo.total || 0).toFixed(2))
             : e('div', { style: cardStyle('warn') }, state && state.mimoError ? state.mimoError : '\u672a\u914d\u7f6e'),
+
+          // MiMo API Key 状态：自动从 DSH 凭据库读取，仅用于连接校验（额度接口只认网页 Cookie）
+          e('div', { style: { fontSize: 12, color: CSS.textSecondary, marginTop: 8, lineHeight: 1.7 } },
+            'MiMo API Key: ' + (state && state.mimoKeyConfigured
+              ? '\u5df2\u4ece DSH \u51ed\u636e\u5e93\u8bfb\u53d6\uff08XIAOMI_TOKEN_PLAN_CN_API_KEY\uff09'
+              : '\u672a\u5728 DSH \u51ed\u636e\u5e93\u914d\u7f6e XIAOMI_TOKEN_PLAN_CN_API_KEY')
+              + (state && state.mimoKeyValid === true ? ' \u00b7 \u6821\u9a8c\u901a\u8fc7' : state && state.mimoKeyValid === false ? ' \u00b7 \u6821\u9a8c\u5931\u8d25' : '')),
+          state && state.mimoCookieStale
+            ? e('div', { style: Object.assign({}, cardStyle('warn'), { marginTop: 8 }) },
+                '\u26a0 Cookie \u5df2\u8fc7\u671f\uff1a\u8bf7\u91cd\u65b0\u767b\u5f55 platform.xiaomimimo.com \u540e\uff0c\u5728\u6d4f\u89c8\u5668\u5f00\u53d1\u8005\u5de5\u5177\u4e2d\u590d\u5236 Cookie \u7c98\u8d34\u5230\u4e0a\u65b9\u5e76\u4fdd\u5b58\u3002\u989d\u5ea6\u67e5\u8be2\u53ea\u8ba4\u7f51\u9875\u4f1a\u8bdd Cookie\uff1bMiMo API Key \u4ec5\u7528\u4e8e\u6a21\u578b\u8c03\u7528\u3002')
+            : null,
 
           // actions
           e('div', { style: { display: 'flex', gap: 10, marginTop: 18, alignItems: 'center', flexWrap: 'wrap' } },

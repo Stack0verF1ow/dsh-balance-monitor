@@ -61,11 +61,11 @@ browser (only "is configured" flags do).
 - **DeepSeek 显示「未配置凭据」**: make sure `~/.dsh/.credentials.yaml` has a non-empty `DEEPSEEK_API_KEY`.
 - **「今日花费」是怎么算的**: DeepSeek 官方接口只有余额没有消费明细，插件用「当日首次成功拉取时的余额」作基线，
   今日花费 = 基线余额 − 当前余额（当天首次拉取/跨天自动更新基线并落盘，跨重启也有效；当天充值会使差值变负，按 0 显示）。
-- **MiMo 显示 HTTP 404 / 解析失败**: the MiMo platform API may have changed; edit the endpoint on the
-  settings page. As of 2026-08-16, `api/v1/user/balance` is gone; the current working endpoint is
-  `https://platform.xiaomimimo.com/api/v1/tokenPlan/usage` (token-quota plan, no cash balance — the
-  plugin parses the new shape and shows "Token Plan remaining"). The cookie needs `api-platform_serviceToken`
-  and `userId`.
+- **MiMo 显示 401 / 解析失败**: 额度接口 `platform.xiaomimimo.com/api/v1/tokenPlan/usage` 只认**网页会话 Cookie**（官方没有 API Key 版额度接口）。
+  Cookie 会过期（通常是数天到数周）：重新登录 platform.xiaomimimo.com，在开发者工具中复制 Cookie 粘贴到设置页保存即可。
+  插件会自动从 DSH 凭据库读取 `XIAOMI_TOKEN_PLAN_CN_API_KEY` 做连通性校验（`/v1/models`），因此 401 时会明确提示
+  「API Key 正常 / Cookie 已过期」而不再是一句裸 401。若确认新 Cookie 仍 401，可在设置页改 endpoint
+  （2026-08-16 起 `api/v1/user/balance` 已下线，当前走 `tokenPlan/usage`）。
 - **自动刷新间隔**: host-side `REFRESH_INTERVAL_MS` (default 5 min) and the browser 60s polling are tunable.
 
 ## Uninstall / 卸载
